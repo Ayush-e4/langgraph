@@ -3299,6 +3299,51 @@ def test_durability_without_checkpointer(durability: Durability) -> None:
         assert graph.invoke({"count": 0}, durability=durability) == {"count": 2}
 
 
+def test_durability_sync_still_saves_every_step_with_a_checkpointer() -> None:
+    class State(TypedDict):
+        count: int
+
+    def add_one(state: State) -> State:
+        return {"count": state["count"] + 1}
+
+    builder = StateGraph(State)
+    builder.add_node("first", add_one)
+    builder.add_node("second", add_one)
+    builder.add_edge(START, "first")
+    builder.add_edge("first", "second")
+    checkpointer = InMemorySaver()
+    graph = builder.compile(checkpointer=checkpointer)
+    config = {"configurable": {"thread_id": "1"}}
+
+    assert graph.invoke({"count": 0}, config, durability="sync") == {"count": 2}
+    saved = [
+        c.checkpoint["channel_values"].get("count") for c in checkpointer.list(config)
+    ]
+    assert 1 in saved and 2 in saved  # a checkpoint after each step, as before
+
+
+def test_durability_sync_with_a_subgraph_that_never_saves() -> None:
+    class State(TypedDict):
+        count: int
+
+    def add_one(state: State) -> State:
+        return {"count": state["count"] + 1}
+
+    inner = StateGraph(State)
+    inner.add_node("first", add_one)
+    inner.add_node("second", add_one)
+    inner.add_edge(START, "first")
+    inner.add_edge("first", "second")
+    outer = StateGraph(State)
+    outer.add_node("inner", inner.compile(checkpointer=False))
+    outer.add_edge(START, "inner")
+    graph = outer.compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "1"}}
+
+    # the subgraph runs its own loop with no checkpointer under the parent's durability
+    assert graph.invoke({"count": 0}, config, durability="sync") == {"count": 2}
+
+
 def test_subgraph_durability_inherited(durability: Durability) -> None:
     sync_checkpointer = InMemorySaver()
 
